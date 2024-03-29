@@ -69,6 +69,9 @@ func (c *ResourceThresholdChecker) initConfig() error {
 		return err
 	}
 
+	// ResourceThresholdChecker does not need to check node-wise config yet.
+	c.NodeWiseConfigChecker = CreateNoNodeWiseConfigChecker()
+
 	return nil
 }
 

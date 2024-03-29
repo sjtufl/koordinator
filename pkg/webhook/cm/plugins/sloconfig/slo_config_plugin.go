@@ -101,22 +101,37 @@ func parallelizeCheckNode(ctx context.Context, nodeList []corev1.Node, checkers 
 	var lock sync.Mutex
 	var err error
 
-	context, cancel := context.WithCancel(ctx)
+	ctxWithCancel, cancel := context.WithCancel(ctx)
 
+	handleCheckErr := func(checkErr error) {
+		if checkErr != nil {
+			lock.Lock()
+			err = checkErr
+			lock.Unlock()
+			cancel()
+		}
+	}
 	checkNode := func(i int) {
 		for _, checker := range checkers {
+			// Check if there is any conflict between node profiles.
 			checkErr := checker.ExistNodeConflict(&nodeList[i])
 			if checkErr != nil {
-				lock.Lock()
-				err = checkErr
-				lock.Unlock()
-				cancel()
+				handleCheckErr(checkErr)
 				return
+			}
+
+			// Check if there is any misconfiguration on the node.
+			if checker.NeedCheckNodeWiseConfig() {
+				checkErr := checker.CheckNodeWiseConfig(&nodeList[i])
+				if checkErr != nil {
+					handleCheckErr(checkErr)
+					return
+				}
 			}
 		}
 	}
 
-	parallelize.Until(context, len(nodeList), checkNode)
+	parallelize.Until(ctxWithCancel, len(nodeList), checkNode)
 
 	return err
 }

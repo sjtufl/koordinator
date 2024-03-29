@@ -69,6 +69,9 @@ func (c *ColocationConfigChecker) initConfig() error {
 		return err
 	}
 
+	// ColocationConfigChecker does not need to check node-wise config yet.
+	c.NodeWiseConfigChecker = CreateNoNodeWiseConfigChecker()
+
 	return nil
 }
 

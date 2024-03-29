@@ -28,6 +28,8 @@ import (
 	"github.com/koordinator-sh/koordinator/pkg/util/sloconfig"
 )
 
+var _ NodeWiseConfigChecker = &noNodeWiseConfigChecker{}
+
 const InitSuccess = "Success"
 const NotInit = "NotInit"
 
@@ -36,6 +38,7 @@ type ConfigChecker interface {
 	InitStatus() string
 	ConfigParamValid() error
 	NodeConfigProfileChecker
+	NodeWiseConfigChecker
 }
 
 type NodeConfigProfileChecker interface {
@@ -45,6 +48,26 @@ type NodeConfigProfileChecker interface {
 	ExistNodeConflict(node *corev1.Node) error //check a node if exist conflict
 }
 
+// NodeWiseConfigChecker checks the config on each node.
+type NodeWiseConfigChecker interface {
+	NeedCheckNodeWiseConfig() bool
+	CheckNodeWiseConfig(node *corev1.Node) error
+}
+
+type noNodeWiseConfigChecker struct{}
+
+func CreateNoNodeWiseConfigChecker() NodeWiseConfigChecker {
+	return &noNodeWiseConfigChecker{}
+}
+
+func (n *noNodeWiseConfigChecker) NeedCheckNodeWiseConfig() bool {
+	return false
+}
+
+func (n *noNodeWiseConfigChecker) CheckNodeWiseConfig(node *corev1.Node) error {
+	return nil
+}
+
 type CommonChecker struct {
 	configKey    string
 	OldConfigMap *corev1.ConfigMap
@@ -52,6 +75,7 @@ type CommonChecker struct {
 
 	initStatus string
 	NodeConfigProfileChecker
+	NodeWiseConfigChecker
 }
 
 func (c *CommonChecker) IsCfgNotEmptyAndChanged() bool {

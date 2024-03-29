@@ -68,10 +68,11 @@ func (c checkers) CheckConfigContents() error {
 	return nil
 }
 
-// NeedCheckForNodes  if exist checker have multi nodeConfig, then should check for nodes
+// NeedCheckForNodes returns true if there is any checker has multi nodeConfig, or
+// if there is any checker needs to check node wise config.
 func (c checkers) NeedCheckForNodes() bool {
 	for _, checkers := range c {
-		if checkers.HasMultiNodeConfigs() {
+		if checkers.HasMultiNodeConfigs() || checkers.NeedCheckNodeWiseConfig() {
 			return true
 		}
 	}

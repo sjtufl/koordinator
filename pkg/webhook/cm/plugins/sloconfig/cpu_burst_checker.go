@@ -69,6 +69,9 @@ func (c *CPUBurstChecker) initConfig() error {
 		return err
 	}
 
+	// CPUBurstChecker does not need to check node-wise config yet.
+	c.NodeWiseConfigChecker = CreateNoNodeWiseConfigChecker()
+
 	return nil
 }
 

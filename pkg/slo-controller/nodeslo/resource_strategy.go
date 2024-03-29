@@ -25,6 +25,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/koordinator-sh/koordinator/apis/configuration"
+	"github.com/koordinator-sh/koordinator/apis/extension"
 	slov1alpha1 "github.com/koordinator-sh/koordinator/apis/slo/v1alpha1"
 	"github.com/koordinator-sh/koordinator/pkg/util"
 )
@@ -79,6 +80,9 @@ func getCPUBurstConfigSpec(node *corev1.Node, cfg *configuration.CPUBurstCfg) (*
 }
 
 func getSystemConfigSpec(node *corev1.Node, cfg *configuration.SystemCfg) (*slov1alpha1.SystemStrategy, error) {
+	var nodeSystemConfig *slov1alpha1.SystemStrategy
+
+	// Find strategy that matches current node.
 	nodeLabels := labels.Set(node.Labels)
 	for _, nodeStrategy := range cfg.NodeStrategies {
 		selector, err := metav1.LabelSelectorAsSelector(nodeStrategy.NodeSelector)
@@ -87,11 +91,25 @@ func getSystemConfigSpec(node *corev1.Node, cfg *configuration.SystemCfg) (*slov
 			continue
 		}
 		if selector.Matches(nodeLabels) {
-			return nodeStrategy.SystemStrategy.DeepCopy(), nil
+			nodeSystemConfig = nodeStrategy.SystemStrategy.DeepCopy()
+			break
 		}
-
 	}
-	return cfg.ClusterStrategy.DeepCopy(), nil
+
+	// If no matched node strategy, use cluster strategy.
+	if nodeSystemConfig == nil {
+		nodeSystemConfig = cfg.ClusterStrategy.DeepCopy()
+	}
+
+	// Check whether node bandwidth is specified on current node, which takes higher priority.
+	if nodeBandwidthQuantity, err := extension.GetNodeTotalBandwidth(node.Annotations); err != nil {
+		klog.Errorf("failed to get node total bandwidth from annotation, error: %v", err)
+		// TODO: Shall we return error here?
+	} else {
+		nodeSystemConfig.TotalNetworkBandwidth = *nodeBandwidthQuantity
+	}
+
+	return nodeSystemConfig, nil
 }
 
 func getHostApplicationConfig(node *corev1.Node, cfg *configuration.HostApplicationCfg) ([]slov1alpha1.HostApplicationSpec, error) {

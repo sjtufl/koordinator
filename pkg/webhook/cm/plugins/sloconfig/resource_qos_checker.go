@@ -26,12 +26,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/storage"
 	"k8s.io/klog/v2"
 
 	"github.com/koordinator-sh/koordinator/apis/configuration"
+	"github.com/koordinator-sh/koordinator/apis/extension"
 	"github.com/koordinator-sh/koordinator/apis/slo/v1alpha1"
 )
 
@@ -49,6 +51,7 @@ const (
 )
 
 var _ ConfigChecker = &ResourceQOSChecker{}
+var _ NodeWiseConfigChecker = &NodeWiseResourceQOSChecker{}
 
 type ResourceQOSChecker struct {
 	cfg    *configuration.ResourceQOSCfg
@@ -144,7 +147,7 @@ func CheckTotalPercentageIsValid(cfg *configuration.ResourceQOSCfg) error {
 	// check netqos config is valid for cluster strategy
 	if cfg.ClusterStrategy != nil {
 		var totalPercentage int64 = 100
-		ingressLeft, egressLeft := doSubstration(cfg.ClusterStrategy, totalPercentage)
+		ingressLeft, egressLeft := doSubtraction(cfg.ClusterStrategy, totalPercentage)
 		if ingressLeft < 0 || egressLeft < 0 {
 			return fmt.Errorf("ClusterStrategy total net bandwidth percentage already over 100")
 		}
@@ -153,7 +156,7 @@ func CheckTotalPercentageIsValid(cfg *configuration.ResourceQOSCfg) error {
 	// check netqos config is valid for each node strategy
 	for idx, nodeStrategy := range cfg.NodeStrategies {
 		var totalPercentage int64 = 100
-		ingressLeft, egressLeft := doSubstration(nodeStrategy.ResourceQOSStrategy, totalPercentage)
+		ingressLeft, egressLeft := doSubtraction(nodeStrategy.ResourceQOSStrategy, totalPercentage)
 		if ingressLeft < 0 || egressLeft < 0 {
 			return fmt.Errorf("cfg.NodeStrategies[%d] total net bandwidth percentage already over 100", idx)
 		}
@@ -162,7 +165,7 @@ func CheckTotalPercentageIsValid(cfg *configuration.ResourceQOSCfg) error {
 	return nil
 }
 
-func doSubstration(strategy *v1alpha1.ResourceQOSStrategy, totalNetBandWidth int64) (leftIngress, leftEgress int64) {
+func doSubtraction(strategy *v1alpha1.ResourceQOSStrategy, totalNetBandWidth int64) (leftIngress, leftEgress int64) {
 	ingressRequestTotal, egressRequestTotal := totalNetBandWidth, totalNetBandWidth
 	if strategy == nil {
 		return ingressRequestTotal, egressRequestTotal
@@ -216,7 +219,7 @@ func doSubstration(strategy *v1alpha1.ResourceQOSStrategy, totalNetBandWidth int
 func CheckTotalQuantityIsValid(cfg *configuration.ResourceQOSCfg, sysCfg *configuration.SystemCfg) error {
 	// check netqos config is valid for cluster strategy
 	if cfg.ClusterStrategy != nil && sysCfg.ClusterStrategy != nil {
-		ingressLeft, egressLeft := doSubstration(cfg.ClusterStrategy, sysCfg.ClusterStrategy.TotalNetworkBandwidth.Value())
+		ingressLeft, egressLeft := doSubtraction(cfg.ClusterStrategy, sysCfg.ClusterStrategy.TotalNetworkBandwidth.Value())
 		if ingressLeft < 0 || egressLeft < 0 {
 			return fmt.Errorf("total net bandwidth over total network bandwidth in clusterStrategy")
 		}
@@ -225,11 +228,10 @@ func CheckTotalQuantityIsValid(cfg *configuration.ResourceQOSCfg, sysCfg *config
 	// check netqos config is valid for each node strategy
 	for idx, nodeStrategy := range cfg.NodeStrategies {
 		totalNetbandWidth := getTotalNetBandWidth(nodeStrategy.NodeSelector, sysCfg)
-		ingressLeft, egressLeft := doSubstration(nodeStrategy.ResourceQOSStrategy, totalNetbandWidth.Value())
+		ingressLeft, egressLeft := doSubtraction(nodeStrategy.ResourceQOSStrategy, totalNetbandWidth.Value())
 		if ingressLeft < 0 || egressLeft < 0 {
 			return fmt.Errorf("total net bandwidth quantity already over total network bandwidth in cfg.NodeStrategies[%d]", idx)
 		}
-
 	}
 
 	return nil
@@ -362,6 +364,54 @@ func ValidatePercentageField(value int, fldPath *field.Path) field.ErrorList {
 	return allErrs
 }
 
+type NodeWiseResourceQOSChecker struct {
+	cfg *configuration.ResourceQOSCfg
+}
+
+func (n *NodeWiseResourceQOSChecker) NeedCheckNodeWiseConfig() bool {
+	return true
+}
+
+func (n *NodeWiseResourceQOSChecker) CheckNodeWiseConfig(node *corev1.Node) error {
+	var (
+		nodeBandwidth *resource.Quantity
+		err           error
+	)
+	if nodeBandwidth, err = extension.GetNodeTotalBandwidth(node.Annotations); err != nil {
+		return fmt.Errorf("failed to get node total bandwidth from annnotation: %v", err)
+	}
+
+	// Node bandwidth is not specified on current node.
+	if nodeBandwidth == nil {
+		return nil
+	}
+
+	// Check NetworkQoS config in node strategy is valid for current node.
+	for idx := range n.cfg.NodeStrategies {
+		nodeStrategy := n.cfg.NodeStrategies[idx]
+		if !nodeMatchesNodeStrategy(node, &nodeStrategy) {
+			continue
+		}
+		ingressLeft, egressLeft := doSubtraction(nodeStrategy.ResourceQOSStrategy, nodeBandwidth.Value())
+		if ingressLeft < 0 || egressLeft < 0 {
+			return fmt.Errorf("total net bandwidth quantity in NodeStrategy %s exceeds the total network bandwidth %s", nodeStrategy.Name, nodeBandwidth.String())
+		}
+
+		// NodeStrategy passed the check, so we don't need to check other NodeStrategies or cluster strategy.
+		return nil
+	}
+
+	// Check cluster strategy if no node strategy matches current node.
+	if n.cfg.ClusterStrategy != nil {
+		ingressLeft, egressLeft := doSubtraction(n.cfg.ClusterStrategy, nodeBandwidth.Value())
+		if ingressLeft < 0 || egressLeft < 0 {
+			return fmt.Errorf("total net bandwidth quantity in ClusterStrategy exceeds the total network bandwidth %s", nodeBandwidth.String())
+		}
+	}
+
+	return nil
+}
+
 func (c *ResourceQOSChecker) initConfig() error {
 	cfg := &configuration.ResourceQOSCfg{}
 	configStr := c.NewConfigMap.Data[configuration.ResourceQOSConfigKey]
@@ -391,6 +441,9 @@ func (c *ResourceQOSChecker) initConfig() error {
 			c.NewConfigMap.Namespace, c.NewConfigMap.Name, err.Error()))
 		return err
 	}
+
+	c.NodeWiseConfigChecker = &NodeWiseResourceQOSChecker{cfg: c.cfg}
+
 	return nil
 }
 
@@ -400,4 +453,16 @@ func (c *ResourceQOSChecker) getConfigProfiles() []configuration.NodeCfgProfile 
 		profiles = append(profiles, nodeCfg.NodeCfgProfile)
 	}
 	return profiles
+}
+
+func nodeMatchesNodeStrategy(node *corev1.Node, nodeStrategy *configuration.NodeResourceQOSStrategy) bool {
+	if nodeStrategy == nil || node == nil {
+		return false
+	}
+
+	selector, err := metav1.LabelSelectorAsSelector(nodeStrategy.NodeSelector)
+	if err != nil {
+		return false
+	}
+	return selector.Matches(labels.Set(node.Labels))
 }

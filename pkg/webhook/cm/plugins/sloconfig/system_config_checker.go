@@ -69,6 +69,8 @@ func (c *SystemConfigChecker) initConfig() error {
 		return err
 	}
 
+	c.NodeWiseConfigChecker = CreateNoNodeWiseConfigChecker()
+
 	return nil
 }
 
